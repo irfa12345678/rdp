@@ -1,0 +1,159 @@
+name: POWER-RDP
+on: workflow_dispatch
+
+jobs:
+  power-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 600
+
+    steps:
+    - name: ⚡ POWER RDP SETUP
+      run: |
+        # Enable RDP dengan optimasi performa
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fSingleSessionPerUser" -Value 0 -Force
+        
+        # Optimasi RDP Performance
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxInstanceCount" -Value 4294967295
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxMonitors" -Value 4
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxXResolution" -Value 5120
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxYResolution" -Value 2880
+        
+        # Disable Security untuk koneksi mudah
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0
+        
+        # Firewall rules
+        netsh advfirewall firewall add rule name="RDP-POWER" dir=in action=allow protocol=TCP localport=3389 enable=yes
+
+    - name: 🚀 BUAT USER POWER
+      run: |
+        # Generate password super kuat
+        $chars = @()
+        $chars += [char[]](65..90)   # A-Z
+        $chars += [char[]](97..122)  # a-z  
+        $chars += [char[]](48..57)   # 0-9
+        $chars += [char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126) # Special
+        
+        $password = -join ((1..20) | ForEach-Object { $chars | Get-Random })
+        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+        
+        # Create POWER USER
+        New-LocalUser -Name "POWER" -Password $securePass -AccountNeverExpires
+        Add-LocalGroupMember -Group "Administrators" -Member "POWER"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "POWER"
+        Add-LocalGroupMember -Group "Performance Log Users" -Member "POWER"
+        
+        # Enable Administrator account juga
+        Enable-LocalUser -Name "Administrator"
+        $adminPass = ConvertTo-SecureString "Admin$password" -AsPlainText -Force
+        Set-LocalUser -Name "Administrator" -Password $adminPass
+        
+        echo "POWER_PASS=$password" >> $env:GITHUB_ENV
+        echo "ADMIN_PASS=Admin$password" >> $env:GITHUB_ENV
+
+    - name: 🔧 INSTALL MULTI TUNNEL
+      run: |
+        # Download 3 tunnel berbeda untuk redundancy
+        $tunnels = @(
+          @{Name="Cloudflared"; Url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"; Path="$env:TEMP\cloudflared.exe"},
+          @{Name="Chisel"; Url="https://github.com/jpillora/chisel/releases/download/v1.9.1/chisel_1.9.1_windows_amd64.gz"; Path="$env:TEMP\chisel.gz"},
+          @{Name="Ngrok"; Url="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"; Path="$env:TEMP\ngrok.zip"}
+        )
+        
+        foreach ($tunnel in $tunnels) {
+          Write-Host "Downloading $($tunnel.Name)..."
+          Invoke-WebRequest -Uri $tunnel.Url -OutFile $tunnel.Path
+        }
+        
+        # Extract yang perlu extract
+        Expand-Archive -Path "$env:TEMP\ngrok.zip" -DestinationPath "$env:SYSTEMROOT\system32\" -Force
+        & "$env:ProgramFiles\7-Zip\7z.exe" x "$env:TEMP\chisel.gz" -o"$env:SYSTEMROOT\system32\" -y
+
+    - name: 🌐 SETUP CLOUDFLARED TUNNEL
+      run: |
+        # Cloudflared tunnel (paling stabil)
+        Start-Process -FilePath "$env:TEMP\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389" -WindowStyle Hidden
+        echo "CLOUDFLARE_TUNNEL=rdp://localhost:3389" >> $env:GITHUB_ENV
+
+    - name: ⚡ SETUP NGROK TUNNEL  
+      run: |
+        # Ngrok tunnel (backup)
+        $NGROK_TOKEN = "${{ secrets.NGROK_TOKEN }}"
+        if ($NGROK_TOKEN) {
+          & "ngrok.exe" authtoken $NGROK_TOKEN
+          Start-Process -FilePath "ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
+          echo "NGROK_ACTIVE=true" >> $env:GITHUB_ENV
+        }
+
+    - name: 🛡️ SETUP CHISEL SERVER
+      run: |
+        # Chisel tunnel (alternative)
+        Start-Process -FilePath "chisel.exe" -ArgumentList "server --port 8080 --reverse" -WindowStyle Hidden
+        echo "CHISEL_PORT=8080" >> $env:GITHUB_ENV
+
+    - name: 🔥 OPTIMASI SYSTEM MAX POWER
+      run: |
+        # Optimasi memory & performance
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "ClearPageFileAtShutdown" -Value 0 -Type DWord
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "LargeSystemCache" -Value 1 -Type DWord
+        
+        # Optimasi network
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 4294967295 -Type DWord
+        
+        # Disable visual effects untuk performance
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2 -Type DWord
+
+    - name: 🎯 SETUP AUTO RECONNECT
+      run: |
+        # Script auto-reconnect jika terputus
+        $autoScript = @"
+        while (`$true) {
+            try {
+                `$conn = Test-NetConnection -ComputerName localhost -Port 3389 -WarningAction SilentlyContinue
+                if (-not `$conn.TcpTestSucceeded) {
+                    Restart-Service -Name "TermService" -Force
+                    Start-Sleep -Seconds 10
+                }
+            } catch { }
+            Start-Sleep -Seconds 30
+        }
+"@
+        $autoScript | Out-File -FilePath "$env:TEMP\auto_rdp.ps1" -Encoding UTF8
+        Start-Process -FilePath "powershell" -ArgumentList "-File `"$env:TEMP\auto_rdp.ps1`"" -WindowStyle Hidden
+
+    - name: 📊 GET CONNECTION INFO
+      run: |
+        # Dapatkan IP public
+        $publicIP = (Invoke-WebRequest -Uri "https://api.ipify.org" -UseBasicParsing).Content
+        echo "PUBLIC_IP=$publicIP" >> $env:GITHUB_ENV
+        
+        # Test koneksi RDP
+        $rdpTest = Test-NetConnection -ComputerName localhost -Port 3389
+        echo "RDP_LOCAL_STATUS=$($rdpTest.TcpTestSucceeded)" >> $env:GITHUB_ENV
+
+    - name: 🎉 DISPLAY POWER INFO
+      run: |
+        Write-Host "==================================================" -ForegroundColor Red
+        Write-Host "                🚀 POWER RDP READY 🚀" -ForegroundColor Yellow
+        Write-Host "==================================================" -ForegroundColor Red
+        Write-Host "🌐 PUBLIC IP: $env:PUBLIC_IP" -ForegroundColor Cyan
+        Write-Host "🔌 PORT: 3389" -ForegroundColor Cyan
+        Write-Host "👤 USER 1: POWER" -ForegroundColor Green  
+        Write-Host "🔑 PASS 1: $env:POWER_PASS" -ForegroundColor Green
+        Write-Host "👤 USER 2: Administrator" -ForegroundColor Green
+        Write-Host "🔑 PASS 2: $env:ADMIN_PASS" -ForegroundColor Green
+        Write-Host "🔧 TUNNELS: Cloudflared + Ngrok + Chisel" -ForegroundColor Magenta
+        Write-Host "⚡ FEATURES: Auto-Reconnect + Multi-User" -ForegroundColor Magenta
+        Write-Host "🎮 PERFORMANCE: Optimized for Gaming/Video" -ForegroundColor Magenta
+        Write-Host "==================================================" -ForegroundColor Red
+
+    - name: ⏳ MAINTAIN POWER SESSION
+      run: |
+        $startTime = Get-Date
+        while ($true) {
+            $uptime = (Get-Date) - $startTime
+            Write-Host "[$(Get-Date)] 🚀 POWER RDP ACTIVE - Uptime: $($uptime.ToString('hh\:mm\:ss')) - IP: $env:PUBLIC_IP:3389" -ForegroundColor Green
+            Write-Host "Users: POWER / Administrator | Press Ctrl+C in GitHub to stop" -ForegroundColor Yellow
+            Start-Sleep -Seconds 60
+        }
