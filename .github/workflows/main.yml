@@ -54,43 +54,21 @@ jobs:
 
     - name: 🔧 INSTALL MULTI TUNNEL
       run: |
-        # Download 3 tunnel berbeda untuk redundancy
+        # Download tunnel
         $tunnels = @(
-          @{Name="Cloudflared"; Url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"; Path="$env:TEMP\cloudflared.exe"},
-          @{Name="Chisel"; Url="https://github.com/jpillora/chisel/releases/download/v1.9.1/chisel_1.9.1_windows_amd64.gz"; Path="$env:TEMP\chisel.gz"},
-          @{Name="Ngrok"; Url="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"; Path="$env:TEMP\ngrok.zip"}
+          @{Name="Cloudflared"; Url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"; Path="$env:TEMP\cloudflared.exe"}
         )
         
         foreach ($tunnel in $tunnels) {
           Write-Host "Downloading $($tunnel.Name)..."
           Invoke-WebRequest -Uri $tunnel.Url -OutFile $tunnel.Path
         }
-        
-        # Extract yang perlu extract
-        Expand-Archive -Path "$env:TEMP\ngrok.zip" -DestinationPath "$env:SYSTEMROOT\system32\" -Force
-        & "$env:ProgramFiles\7-Zip\7z.exe" x "$env:TEMP\chisel.gz" -o"$env:SYSTEMROOT\system32\" -y
 
     - name: 🌐 SETUP CLOUDFLARED TUNNEL
       run: |
         # Cloudflared tunnel (paling stabil)
         Start-Process -FilePath "$env:TEMP\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389" -WindowStyle Hidden
-        echo "CLOUDFLARE_TUNNEL=rdp://localhost:3389" >> $env:GITHUB_ENV
-
-    - name: ⚡ SETUP NGROK TUNNEL  
-      run: |
-        # Ngrok tunnel (backup)
-        $NGROK_TOKEN = "${{ secrets.NGROK_TOKEN }}"
-        if ($NGROK_TOKEN) {
-          & "ngrok.exe" authtoken $NGROK_TOKEN
-          Start-Process -FilePath "ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
-          echo "NGROK_ACTIVE=true" >> $env:GITHUB_ENV
-        }
-
-    - name: 🛡️ SETUP CHISEL SERVER
-      run: |
-        # Chisel tunnel (alternative)
-        Start-Process -FilePath "chisel.exe" -ArgumentList "server --port 8080 --reverse" -WindowStyle Hidden
-        echo "CHISEL_PORT=8080" >> $env:GITHUB_ENV
+        Start-Sleep -Seconds 10
 
     - name: 🔥 OPTIMASI SYSTEM MAX POWER
       run: |
@@ -107,18 +85,18 @@ jobs:
     - name: 🎯 SETUP AUTO RECONNECT
       run: |
         # Script auto-reconnect jika terputus
-        $autoScript = @"
-        while (`$true) {
-            try {
-                `$conn = Test-NetConnection -ComputerName localhost -Port 3389 -WarningAction SilentlyContinue
-                if (-not `$conn.TcpTestSucceeded) {
-                    Restart-Service -Name "TermService" -Force
-                    Start-Sleep -Seconds 10
-                }
-            } catch { }
-            Start-Sleep -Seconds 30
+        $autoScript = @'
+while ($true) {
+    try {
+        $conn = Test-NetConnection -ComputerName localhost -Port 3389 -WarningAction SilentlyContinue
+        if (-not $conn.TcpTestSucceeded) {
+            Restart-Service -Name "TermService" -Force
+            Start-Sleep -Seconds 10
         }
-"@
+    } catch { }
+    Start-Sleep -Seconds 30
+}
+'@
         $autoScript | Out-File -FilePath "$env:TEMP\auto_rdp.ps1" -Encoding UTF8
         Start-Process -FilePath "powershell" -ArgumentList "-File `"$env:TEMP\auto_rdp.ps1`"" -WindowStyle Hidden
 
@@ -143,7 +121,7 @@ jobs:
         Write-Host "🔑 PASS 1: $env:POWER_PASS" -ForegroundColor Green
         Write-Host "👤 USER 2: Administrator" -ForegroundColor Green
         Write-Host "🔑 PASS 2: $env:ADMIN_PASS" -ForegroundColor Green
-        Write-Host "🔧 TUNNELS: Cloudflared + Ngrok + Chisel" -ForegroundColor Magenta
+        Write-Host "🔧 TUNNEL: Cloudflared Active" -ForegroundColor Magenta
         Write-Host "⚡ FEATURES: Auto-Reconnect + Multi-User" -ForegroundColor Magenta
         Write-Host "🎮 PERFORMANCE: Optimized for Gaming/Video" -ForegroundColor Magenta
         Write-Host "==================================================" -ForegroundColor Red
